@@ -31,6 +31,7 @@ import pathlib
 import json
 import torch.nn.functional as F
 from scipy.stats import pearsonr
+import wandb
 
 import transformers
 from transformers import (
@@ -85,6 +86,7 @@ def preprocess_SEND_files(
                        },
     linguistic_tokenizer=None,
     pad_symbol=0,
+    max_number_of_file = -1
 ):
     SEND_videos = []
     
@@ -135,9 +137,13 @@ def preprocess_SEND_files(
                 max_window_l_length = len(token_ids)
     max_window_l_length += 2 # the start and the end token
     
+    if max_number_of_file != -1:
+        logger.info(f"WARNING: Only loading #{max_number_of_file} videos.")
     max_seq_len = -1
     video_count = 0
     for video_id in a_ids: # pick any one!
+        if max_number_of_file != -1 and video_count >= max_number_of_file:
+            break # we enforce!
         if video_count > 1 and video_count%100 == 0:
             logger.info(f"Processed #{len(SEND_videos)} videos.")
             # logger.info(SEND_videos[-1])
@@ -498,11 +504,13 @@ def train(
             loss, output =                 model(input_a_feature, input_l_feature, input_l_mask, input_l_segment_ids,
                       input_v_feature, rating_labels, input_mask)
             loss /= torch.sum(seq_lens).tolist()
-            # loss.backward() # uncomment this for actual run!
+            loss.backward() # uncomment this for actual run!
             optimizer.step()
             optimizer.zero_grad()
             
             pbar.set_description("loss: %.4f"%loss)
+            if args.is_tensorboard:
+                wandb.log({"train_loss": loss})
             
             if global_step%args.eval_interval == 0:
                 logger.info('Evaluating the model...')
@@ -514,21 +522,32 @@ def train(
                 if np.mean(ccc) > best_ccc:
                     best_ccc = np.mean(ccc)
                     # save best ccc models.
-                    
+                    if args.save_best_model:
+                        logger.info('Saving the new best model for ccc...')
+                        checkpoint = {'model': model.state_dict()}
+                        checkpoint_path = os.path.join(args.output_dir, "best_ccc_pytorch_model.bin")
+                        torch.save(checkpoint, checkpoint_path)
                 if np.mean(corr) > best_corr:
                     best_corr = np.mean(corr)
                     # save best corr models.
-
+                    if args.save_best_model:
+                        logger.info('Saving the new best model for corr...')
+                        checkpoint = {'model': model.state_dict()}
+                        checkpoint_path = os.path.join(args.output_dir, "best_corr_pytorch_model.bin")
+                        torch.save(checkpoint, checkpoint_path)
+                        
                 # Average statistics and print
-                stats = {'loss': loss, 'corr': np.mean(corr), 'corr_std': np.std(corr),
+                stats = {'eval_loss': loss, 'corr': np.mean(corr), 'corr_std': np.std(corr),
                          'ccc': np.mean(ccc), 'ccc_std': np.std(ccc), 
                          'best_corr': best_ccc, 'best_ccc': best_corr}
+                if args.is_tensorboard:
+                    wandb.log(stats)
                 logger.info(f'Evaluation results: {stats}')
                 
             global_step +=  1
 
 
-# In[ ]:
+# In[1]:
 
 
 def arg_parse():
@@ -563,6 +582,8 @@ def arg_parse():
                         help='Number of training epochs.')
     parser.add_argument('--eval_interval', type=int, default=20,
                         help='Evaluation interval in steps.')
+    parser.add_argument('--max_number_of_file', type=int, default=-1,
+                        help='Maybe we just want to test with a few number of files.')
     
     parser.add_argument('--resumed_from_file_path', type=str, default="",
                         help='Whether to resume for this file.')
@@ -574,6 +595,10 @@ def arg_parse():
                         default=False,
                         action='store_true',
                         help="Whether to use tensorboard.")
+    parser.add_argument("--save_best_model",
+                        default=False,
+                        action='store_true',
+                        help="Whether to save the best model during eval.")
     parser.add_argument("--eval_only",
                         default=False,
                         action='store_true',
@@ -631,6 +656,14 @@ if __name__ == "__main__":
     logger.info("Training the model with the following parameters: ")
     logger.info(args)
     
+    if args.is_tensorboard:
+        logger.warning("Enabling wandb for tensorboard logging...")
+        run = wandb.init(project="SEND-Multimodal", entity="wuzhengx")
+        run_name = wandb.run.name
+        wandb.config.update(args)
+    else:
+        wandb = None
+    
     # We don't allow flexibility here..
     tokenizer = AutoTokenizer.from_pretrained(
         "bert-base-uncased",
@@ -652,11 +685,13 @@ if __name__ == "__main__":
             train_modalities_data_dir,
             train_target_data_dir,
             linguistic_tokenizer=tokenizer,
+            max_number_of_file=args.max_number_of_file
         )
         test_SEND_features = preprocess_SEND_files(
             test_modalities_data_dir,
             test_target_data_dir,
             linguistic_tokenizer=tokenizer,
+            max_number_of_file=args.max_number_of_file
         )
         
     else:
@@ -667,6 +702,7 @@ if __name__ == "__main__":
             test_modalities_data_dir,
             test_target_data_dir,
             linguistic_tokenizer=tokenizer,
+            max_number_of_file=args.max_number_of_file
         )
     logger.info("Finish Loading Datasets...")
     
