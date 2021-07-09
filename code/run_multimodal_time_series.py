@@ -449,34 +449,34 @@ def evaluate(
     outputs = []
     total_loss = 0
     data_num = 0
-    for step, batch in enumerate(pbar):
-        model.train()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        input_a_feature, input_l_feature, input_l_mask, input_l_segment_ids,             input_v_feature, rating_labels, seq_lens, input_mask = batch
-        input_a_feature = input_a_feature.to(device)
-        input_l_feature = input_l_feature.to(device)
-        input_l_mask = input_l_mask.to(device)
-        input_l_segment_ids = input_l_segment_ids.to(device)
-        input_v_feature = input_v_feature.to(device)
-        rating_labels = rating_labels.to(device)
-        seq_lens = seq_lens.to(device)
-        input_mask = input_mask.to(device)
+    model.eval()
+    with torch.no_grad():
+        for step, batch in enumerate(pbar):
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            input_a_feature, input_l_feature, input_l_mask, input_l_segment_ids,                 input_v_feature, rating_labels, seq_lens, input_mask = batch
+            input_a_feature = input_a_feature.to(device)
+            input_l_feature = input_l_feature.to(device)
+            input_l_mask = input_l_mask.to(device)
+            input_l_segment_ids = input_l_segment_ids.to(device)
+            input_v_feature = input_v_feature.to(device)
+            rating_labels = rating_labels.to(device)
+            seq_lens = seq_lens.to(device)
+            input_mask = input_mask.to(device)
 
-        loss, output =             model(input_a_feature, input_l_feature, input_l_mask, input_l_segment_ids,
-                  input_v_feature, rating_labels, input_mask)
-        total_loss += loss.data.cpu().detach().tolist()
-        data_num += torch.sum(seq_lens).tolist()
-        output_array = output.cpu().detach().numpy()
-        rating_labels_array = rating_labels.cpu().detach().numpy()
-        output_array = output.cpu().detach().numpy()
+            loss, output =                 model(input_a_feature, input_l_feature, input_l_mask, input_l_segment_ids,
+                      input_v_feature, rating_labels, input_mask)
+            total_loss += loss.data.cpu().detach().tolist()
+            data_num += torch.sum(seq_lens).tolist()
+            output_array = output.cpu().detach().numpy()
+            rating_labels_array = rating_labels.cpu().detach().numpy()
+            output_array = output.cpu().detach().numpy()
 
-        for i in range(0, input_a_feature.shape[0]):
-            ccc.append(eval_ccc(output_array[i], rating_labels_array[i]))
-            corr.append(pearsonr(output_array[i], rating_labels_array[i])[0])
-            outputs.append(output_array[i])
-    total_loss /= data_num
-
+            for i in range(0, input_a_feature.shape[0]):
+                ccc.append(eval_ccc(output_array[i][:int(seq_lens[i].tolist()[0])], rating_labels_array[i][:int(seq_lens[i].tolist()[0])]))
+                corr.append(pearsonr(output_array[i][:int(seq_lens[i].tolist()[0])], rating_labels_array[i][:int(seq_lens[i].tolist()[0])])[0])
+                outputs.append(output_array[i])
+        total_loss /= data_num
     return total_loss, ccc, corr, outputs
     
 def train(
@@ -539,7 +539,7 @@ def train(
                 # Average statistics and print
                 stats = {'eval_loss': loss, 'corr': np.mean(corr), 'corr_std': np.std(corr),
                          'ccc': np.mean(ccc), 'ccc_std': np.std(ccc), 
-                         'best_corr': best_ccc, 'best_ccc': best_corr}
+                         'best_ccc': best_ccc, 'best_corr': best_corr}
                 if args.is_tensorboard:
                     wandb.log(stats)
                 logger.info(f'Evaluation results: {stats}')
@@ -551,19 +551,6 @@ def train(
 
 
 def arg_parse():
-    
-    # This is a single loop to generate the dataset.
-    n_processes = 1
-    mode = "all"
-    n_command_struct = 10000
-    grid_size = 6
-    n_object_max = 10
-    seed = 42
-    date = "2021-05-07"
-    per_command_world_retry_max = 200
-    per_command_world_target_count = 10 # for each command, we target to have 50 shapeWorld!
-    resumed_from_file_path = ""
-    is_tensorboard = False
     
     parser = argparse.ArgumentParser(description='multimodal emotion analysis argparse.')
     # Experiment management:
