@@ -426,7 +426,8 @@ class MultimodalEmotionPrediction(nn.Module):
         attended_a = a_decode * attention_gate[:,:,0:1] # a
         attended_l = l_decode * attention_gate[:,:,1:2] # a
         attended_v = v_decode * attention_gate[:,:,2:] # a
-        attended_multimodal = attended_a + attended_l + attended_v
+        # attended_multimodal = attended_a + attended_l + attended_v
+        attended_multimodal = l_decode
         
         # decoding to ratings.
         output, (_, _) = self.rating_decoder(attended_multimodal)
