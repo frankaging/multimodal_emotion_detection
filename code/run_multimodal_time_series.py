@@ -208,9 +208,10 @@ def preprocess_SEND_files(
         for window in sampled_l_features_raw:
             complete_window_word = ["[CLS]"] + window + ["[SEP]"]
             token_ids = linguistic_tokenizer.convert_tokens_to_ids(complete_window_word)
+            input_mask = [1] * len(token_ids)
             for _ in range(0, max_window_l_length-len(token_ids)):
                 token_ids.append(linguistic_tokenizer.pad_token_id)
-            input_mask = [1] * len(token_ids)
+                input_mask.append(0)
             segment_ids = [0] * len(token_ids)
             sampled_l_features += [token_ids]
             sampled_l_mask += [input_mask]
@@ -548,7 +549,7 @@ def train(
             global_step +=  1
 
 
-# In[1]:
+# In[ ]:
 
 
 def arg_parse():
@@ -614,14 +615,13 @@ if __name__ == "__main__":
     try:        
         get_ipython().run_line_magic('matplotlib', 'inline')
         # Experiment management:
-        args.train_batch_size=6
-        args.eval_batch_size=12
-        args.lr=1e-4
+        args.train_batch_size=1
+        args.eval_batch_size=1
+        args.lr=8e-5
         args.seed=42
         args.is_tensorboard=True # Let us try this!
         args.output_dir="../default_output_log/"
         is_jupyter = True
-
     except:
         is_jupyter = False
         
@@ -644,7 +644,7 @@ if __name__ == "__main__":
     logger.info("Training the model with the following parameters: ")
     logger.info(args)
     
-    if args.is_tensorboard:
+    if args.is_tensorboard and not is_jupyter:
         logger.warning("Enabling wandb for tensorboard logging...")
         run = wandb.init(project="SEND-Multimodal", entity="wuzhengx")
         run_name = wandb.run.name
@@ -728,36 +728,43 @@ if __name__ == "__main__":
             test_input_v_feature, test_rating_labels, test_seq_lens, test_input_mask
         )
         test_dataloader = DataLoader(test_data, batch_size=args.eval_batch_size, shuffle=False)
-        
-        # Init model with optimizer.
-        model = MultimodalEmotionPrediction()
-        no_decay = ['bias', 'gamma', 'beta']
-        optimizer_parameters = [
-            {'params': [p for n, p in model.named_parameters() 
-                if not any(nd in n for nd in no_decay)], 'weight_decay_rate': 0.01},
-            {'params': [p for n, p in model.named_parameters() 
-                if any(nd in n for nd in no_decay)], 'weight_decay_rate': 0.0}
-            ]
-        num_train_steps = int(
-            len(train_data) / args.train_batch_size * args.num_train_epochs)
-        # We use the default BERT optimz to do gradient descent.
-        optimizer = BERTAdam(optimizer_parameters,
-                            lr=args.lr,
-                            warmup=args.warmup_proportion,
-                            t_total=num_train_steps)
-        # Determine the device.
-        if not torch.cuda.is_available() or is_jupyter:
-            device = torch.device("cpu")
-            n_gpu = -1
-        else:
-            device = torch.device("cuda")
-            n_gpu = torch.cuda.device_count()
-        model = model.to(device)
-        
-        train(
-            train_dataloader, test_dataloader, model, optimizer,
-            device, args
-        )
     else:
         logger.info("Not implemented...")
+
+
+# In[ ]:
+
+
+if not args.eval_only:
+    # Init model with optimizer.
+    model = MultimodalEmotionPrediction()
+    no_decay = ['bias', 'gamma', 'beta']
+    optimizer_parameters = [
+        {'params': [p for n, p in model.named_parameters() 
+            if not any(nd in n for nd in no_decay)], 'weight_decay_rate': 0.01},
+        {'params': [p for n, p in model.named_parameters() 
+            if any(nd in n for nd in no_decay)], 'weight_decay_rate': 0.0}
+        ]
+    num_train_steps = int(
+        len(train_data) / args.train_batch_size * args.num_train_epochs)
+    # We use the default BERT optimz to do gradient descent.
+    optimizer = BERTAdam(optimizer_parameters,
+                        lr=args.lr,
+                        warmup=args.warmup_proportion,
+                        t_total=num_train_steps)
+    # Determine the device.
+    if not torch.cuda.is_available() or is_jupyter:
+        device = torch.device("cpu")
+        n_gpu = -1
+    else:
+        device = torch.device("cuda")
+        n_gpu = torch.cuda.device_count()
+    model = model.to(device)
+
+    train(
+        train_dataloader, test_dataloader, model, optimizer,
+        device, args
+    )
+else:
+    logger.info("Not implemented...")
 
