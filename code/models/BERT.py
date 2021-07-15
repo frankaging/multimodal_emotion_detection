@@ -75,29 +75,14 @@ class BertEmbeddings(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        # self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id)
+        self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id)
         self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
-
-        # adding in transformation layers for studying abroad purpose
-        # fast-text embedding
-        fast_text_vocab_size = 31160
-        fast_text_hidden_size = 300
-        fast_text_pad_token_id = 0
-        self.pretrain_word_embeddings = nn.Embedding(fast_text_vocab_size,
-                                                     fast_text_hidden_size,
-                                                     padding_idx=fast_text_pad_token_id)
-        # transformation layer, which will be used
-        self.study_abroad_transformation_layer = nn.Linear(fast_text_hidden_size, 
-                                                           config.hidden_size)
         
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
         # any TensorFlow checkpoint file
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        
-        
-
         # position_ids (1, len position emb) is contiguous in memory and exported when serialized
         self.register_buffer("position_ids", torch.arange(config.max_position_embeddings).expand((1, -1)))
         self.position_embedding_type = getattr(config, "position_embedding_type", "absolute")
@@ -119,9 +104,7 @@ class BertEmbeddings(nn.Module):
             token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=self.position_ids.device)
 
         if inputs_embeds is None:
-            inputs_embeds = self.pretrain_word_embeddings(input_ids)
-            inputs_embeds = self.study_abroad_transformation_layer(inputs_embeds)
-            
+            inputs_embeds = self.word_embeddings(input_ids)
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
         embeddings = inputs_embeds + token_type_embeddings
@@ -230,6 +213,7 @@ class BertSelfAttention(nn.Module):
                 attention_scores = attention_scores + relative_position_scores_query + relative_position_scores_key
 
         attention_scores = attention_scores / math.sqrt(self.attention_head_size)
+
         if attention_mask is not None:
             # Apply the attention mask is (precomputed for all layers in BertModel forward() function)
             attention_scores = attention_scores + attention_mask
@@ -693,6 +677,7 @@ class BertModel(BertPreTrainedModel):
             inputs_embeds=inputs_embeds,
             past_key_values_length=past_key_values_length,
         )
+        
         encoder_outputs = self.encoder(
             embedding_output,
             attention_mask=extended_attention_mask,

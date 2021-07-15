@@ -110,9 +110,20 @@ def preprocess_SEND_files(
         # linguistic features process
         l_file = os.path.join(data_dir, modality_dir_map["linguistic"], f"{video_id}_aligned.tsv")
         l_df = pd.read_csv(l_file, sep='\t')
-        l_words = np.array(preprocess["linguistic"](l_df))
-        l_words = [w.strip().lower() for w in l_words]
-        l_timestamps = np.array(preprocess["linguistic_timer"](l_df))
+        #l_words = np.array(preprocess["linguistic"](l_df))
+        #l_words = [w.strip().lower() for w in l_words]
+        l_words = []
+        l_timestamps = []
+        head = True
+        with open(l_file) as fp:
+            for line in fp:
+                if head:
+                    head = False
+                    continue
+                l_words.append(line.strip().split("\t")[2].lower().strip())
+                l_timestamps.append(float(line.strip().split("\t")[1]))
+        #l_timestamps = np.array(preprocess["linguistic_timer"](l_df))
+        l_timestamps = np.array(l_timestamps)
         # sample based on interval
         current_time = 0.0
         keep_first = True
@@ -132,6 +143,8 @@ def preprocess_SEND_files(
         if len(tmp_words) > 0:
             sampled_l_words.append(tmp_words)
         for window_words in sampled_l_words:
+            window_str = " ".join(window_words)
+            window_words = linguistic_tokenizer.tokenize(window_str)
             token_ids = linguistic_tokenizer.convert_tokens_to_ids(window_words)
             if len(token_ids) > max_window_l_length:
                 max_window_l_length = len(token_ids)
@@ -191,10 +204,23 @@ def preprocess_SEND_files(
         # linguistic features process
         l_file = os.path.join(data_dir, modality_dir_map["linguistic"], f"{video_id}_aligned.tsv")
         l_df = pd.read_csv(l_file, sep='\t')
-        l_words = np.array(preprocess["linguistic"](l_df))
-        l_words = [w.strip().lower() for w in l_words]
-        l_timestamps = np.array(preprocess["linguistic_timer"](l_df))
+        # the following line is buggy, it may parse file incorrectly!
+        #l_words = np.array(preprocess["linguistic"](l_df))
+        #l_words = [w.strip().lower() for w in l_words]
+        l_words = []
+        l_timestamps = []
+        head = True
+        with open(l_file) as fp:
+            for line in fp:
+                if head:
+                    head = False
+                    continue
+                l_words.append(line.strip().split("\t")[2].lower().strip())
+                l_timestamps.append(float(line.strip().split("\t")[1]))
+        #l_timestamps = np.array(preprocess["linguistic_timer"](l_df))
+        l_timestamps = np.array(l_timestamps)
         assert len(l_words) == l_timestamps.shape[0]
+        
         sampled_l_features_raw = [[] for i in range(len(windows))]
         for i in range(0, l_timestamps.shape[0]):
             # using mod to hash to the correct bucket.
@@ -202,13 +228,16 @@ def preprocess_SEND_files(
             if hash_in_window >= len(windows):
                 continue # we cannot predict after ratings max.
             sampled_l_features_raw[hash_in_window].append(l_words[i])
+        # print(sampled_l_features_raw)
         sampled_l_features = []
         sampled_l_mask = []
         sampled_l_segment_ids = []
         for window in sampled_l_features_raw:
+            window_str = " ".join(window)
+            window = linguistic_tokenizer.tokenize(window_str)
             complete_window_word = ["[CLS]"] + window + ["[SEP]"]
             token_ids = linguistic_tokenizer.convert_tokens_to_ids(complete_window_word)
-            input_mask = [1] * len(token_ids)
+            input_mask = [1 for _ in range(len(token_ids))]
             for _ in range(0, max_window_l_length-len(token_ids)):
                 token_ids.append(linguistic_tokenizer.pad_token_id)
                 input_mask.append(0)
@@ -216,7 +245,8 @@ def preprocess_SEND_files(
             sampled_l_features += [token_ids]
             sampled_l_mask += [input_mask]
             sampled_l_segment_ids += [segment_ids]
-        
+
+
         # visual features process
         # for visual, we actually need to active control what image we load, we
         # cannot just load all images, it will below memory.
@@ -348,6 +378,9 @@ class MultimodalEmotionPrediction(nn.Module):
             config=linguistic_config,
             cache_dir=cache_dir
         )
+        # let us disenable gradient prop
+        for name, param in self.linguistic_encoder.named_parameters():
+                param.requires_grad = False
         
         # Loading visual model using vggface-2
         self.visual_encoder = Resnet50_scratch_dag()
@@ -402,6 +435,7 @@ class MultimodalEmotionPrediction(nn.Module):
         input_l_feature = input_l_feature.reshape(batch_size*seq_len, -1)
         input_l_mask = input_l_mask.reshape(batch_size*seq_len, -1)
         input_l_segment_ids = input_l_segment_ids.reshape(batch_size*seq_len, -1)
+
         l_decode = self.linguistic_encoder(
             input_ids=input_l_feature,
             attention_mask=input_l_mask,
@@ -472,10 +506,8 @@ def evaluate(
             data_num += torch.sum(seq_lens).tolist()
             output_array = output.cpu().detach().numpy()
             rating_labels_array = rating_labels.cpu().detach().numpy()
-            output_array = output.cpu().detach().numpy()
-
             for i in range(0, input_a_feature.shape[0]):
-                ccc.append(eval_ccc(output_array[i][:int(seq_lens[i].tolist()[0])], rating_labels_array[i][:int(seq_lens[i].tolist()[0])]))
+                ccc.append(eval_ccc(rating_labels_array[i][:int(seq_lens[i].tolist()[0])], output_array[i][:int(seq_lens[i].tolist()[0])]))
                 corr.append(pearsonr(output_array[i][:int(seq_lens[i].tolist()[0])], rating_labels_array[i][:int(seq_lens[i].tolist()[0])])[0])
                 outputs.append(output_array[i])
         total_loss /= data_num
@@ -505,7 +537,8 @@ def train(
             
             loss, output =                 model(input_a_feature, input_l_feature, input_l_mask, input_l_segment_ids,
                       input_v_feature, rating_labels, input_mask)
-            loss /= torch.sum(seq_lens).tolist()
+
+            # loss /= torch.sum(seq_lens).tolist()
             loss.backward() # uncomment this for actual run!
             optimizer.step()
             optimizer.zero_grad()
@@ -591,7 +624,11 @@ def arg_parse():
     parser.add_argument("--eval_only",
                         default=False,
                         action='store_true',
-                        help="Whether to use tensorboard.")
+                        help="Whether we are evaluating the model only.")
+    parser.add_argument("--debug_only",
+                        default=False,
+                        action='store_true',
+                        help="Whether we are debugging the code only.")
     
     parser.set_defaults(
         # Exp management:
@@ -675,12 +712,16 @@ if __name__ == "__main__":
             linguistic_tokenizer=tokenizer,
             max_number_of_file=args.max_number_of_file
         )
-        test_SEND_features = preprocess_SEND_files(
-            test_modalities_data_dir,
-            test_target_data_dir,
-            linguistic_tokenizer=tokenizer,
-            max_number_of_file=args.max_number_of_file
-        )
+        if args.debug_only:
+            logger.info("WARNING: Debugging only. Evaluate and Train datasets are the same.")
+            test_SEND_features = copy.deepcopy(train_SEND_features)
+        else:
+            test_SEND_features = preprocess_SEND_files(
+                test_modalities_data_dir,
+                test_target_data_dir,
+                linguistic_tokenizer=tokenizer,
+                max_number_of_file=args.max_number_of_file
+            )
         
     else:
         test_modalities_data_dir = os.path.join(args.data_dir, "features/Test/")
@@ -748,10 +789,11 @@ if not args.eval_only:
     num_train_steps = int(
         len(train_data) / args.train_batch_size * args.num_train_epochs)
     # We use the default BERT optimz to do gradient descent.
-    optimizer = BERTAdam(optimizer_parameters,
-                        lr=args.lr,
-                        warmup=args.warmup_proportion,
-                        t_total=num_train_steps)
+    # optimizer = BERTAdam(optimizer_parameters,
+                        # lr=args.lr,
+                        # warmup=args.warmup_proportion,
+                        # t_total=num_train_steps)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
     # Determine the device.
     if not torch.cuda.is_available() or is_jupyter:
         device = torch.device("cpu")
