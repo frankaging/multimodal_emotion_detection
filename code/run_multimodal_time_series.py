@@ -419,7 +419,7 @@ class MultimodalEmotionPrediction(nn.Module):
         input_v_feature, train_rating_labels, input_mask,
     ):
         # acoustic encoder
-        a_decode = self.acoustic_encoder(input_a_feature)
+        # a_decode = self.acoustic_encoder(input_a_feature)
         
         # linguistic encoder
         batch_size, seq_len = input_l_feature.shape[0], input_l_feature.shape[1]
@@ -433,6 +433,7 @@ class MultimodalEmotionPrediction(nn.Module):
             token_type_ids=input_l_segment_ids,
         )
         l_decode = l_decode.reshape(batch_size, seq_len, -1)
+        l_decode = self.linguistic_resize(l_decode)
         
         # visual encoder
 #         input_v_feature = input_v_feature.reshape(batch_size*seq_len, 224, 224, 3)
@@ -442,7 +443,7 @@ class MultimodalEmotionPrediction(nn.Module):
 #         v_decode = v_decode.reshape(batch_size, seq_len, -1)
 
 #         # resize.
-#         l_decode = self.linguistic_resize(l_decode)
+         
 #         v_decode = self.visual_resize(v_decode)
         
 #         # attention_gated.
@@ -533,10 +534,14 @@ def train(
             loss.backward() # uncomment this for actual run!
             optimizer.step()
             optimizer.zero_grad()
-            
+
+            n_gpu = torch.cuda.device_count()
+            if n_gpu > 1:
+                loss = loss.mean() # mean() to average on multi-gpu.
+
             pbar.set_description("loss: %.4f"%loss)
             if args.is_tensorboard:
-                wandb.log({"train_loss": loss})
+                wandb.log({"train_loss": loss.cpu().detach().numpy()})
             
             if global_step%args.eval_interval == 0:
                 logger.info('Evaluating the model...')
@@ -656,7 +661,10 @@ if __name__ == "__main__":
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-        
+    n_gpu = torch.cuda.device_count()
+    if n_gpu > 0:
+        torch.cuda.manual_seed_all(args.seed)
+
     # Create output directory if not exists.
     pathlib.Path(args.output_dir).mkdir(parents=True, exist_ok=True) 
     
@@ -792,6 +800,9 @@ if not args.eval_only:
     else:
         device = torch.device("cuda")
         n_gpu = torch.cuda.device_count()
+        
+    if n_gpu > 1:
+        model = torch.nn.DataParallel(model)
     model = model.to(device)
 
     train(
