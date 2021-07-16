@@ -379,8 +379,8 @@ class MultimodalEmotionPrediction(nn.Module):
             cache_dir=cache_dir
         )
         # let us disenable gradient prop
-        for name, param in self.linguistic_encoder.named_parameters():
-                param.requires_grad = False
+        # for name, param in self.linguistic_encoder.named_parameters():
+        #     param.requires_grad = False
         
         # Loading visual model using vggface-2
         self.visual_encoder = Resnet50_scratch_dag()
@@ -389,17 +389,11 @@ class MultimodalEmotionPrediction(nn.Module):
         
         # Creating acoustic model.
         acoustic_dim = 88
-        self.acoustic_encoder = nn.Sequential(nn.Linear(acoustic_dim, 128),
-                            nn.ReLU(),
-                            nn.Dropout(0.3))
+        self.acoustic_encoder = nn.Sequential(nn.Linear(acoustic_dim, 128))
         
         # Resize layers.
-        self.linguistic_resize = nn.Sequential(nn.Linear(768, 128),
-                                        nn.ReLU(),
-                                        nn.Dropout(0.3))
-        self.visual_resize = nn.Sequential(nn.Linear(2048, 128),
-                                        nn.ReLU(),
-                                        nn.Dropout(0.3))
+        self.linguistic_resize = nn.Sequential(nn.Linear(768, 128))
+        self.visual_resize = nn.Sequential(nn.Linear(2048, 128))
         
         # Attention gate.
         multimodal_dim = 128*3
@@ -417,10 +411,7 @@ class MultimodalEmotionPrediction(nn.Module):
                                               
         # Rating decoder.
         self.rating_output = nn.Sequential(
-                                nn.Linear(hidden_dim*2, hidden_dim),
-                                nn.ReLU(),
-                                nn.Dropout(0.3),
-                                nn.Linear(hidden_dim, 1))
+                                nn.Linear(hidden_dim*2, 1))
             
     def forward(
         self, input_a_feature, input_l_feature, 
@@ -435,7 +426,7 @@ class MultimodalEmotionPrediction(nn.Module):
         input_l_feature = input_l_feature.reshape(batch_size*seq_len, -1)
         input_l_mask = input_l_mask.reshape(batch_size*seq_len, -1)
         input_l_segment_ids = input_l_segment_ids.reshape(batch_size*seq_len, -1)
-
+        
         l_decode = self.linguistic_encoder(
             input_ids=input_l_feature,
             attention_mask=input_l_mask,
@@ -444,24 +435,24 @@ class MultimodalEmotionPrediction(nn.Module):
         l_decode = l_decode.reshape(batch_size, seq_len, -1)
         
         # visual encoder
-        input_v_feature = input_v_feature.reshape(batch_size*seq_len, 224, 224, 3)
-        input_v_feature = input_v_feature.permute(0,3,1,2).contiguous()
-        _, v_decode = self.visual_encoder(input_v_feature)
-        v_decode = v_decode.squeeze(dim=-1).squeeze(dim=-1).contiguous()
-        v_decode = v_decode.reshape(batch_size, seq_len, -1)
+#         input_v_feature = input_v_feature.reshape(batch_size*seq_len, 224, 224, 3)
+#         input_v_feature = input_v_feature.permute(0,3,1,2).contiguous()
+#         _, v_decode = self.visual_encoder(input_v_feature)
+#         v_decode = v_decode.squeeze(dim=-1).squeeze(dim=-1).contiguous()
+#         v_decode = v_decode.reshape(batch_size, seq_len, -1)
 
-        # resize.
-        l_decode = self.linguistic_resize(l_decode)
-        v_decode = self.visual_resize(v_decode)
+#         # resize.
+#         l_decode = self.linguistic_resize(l_decode)
+#         v_decode = self.visual_resize(v_decode)
         
-        # attention_gated.
-        multimodal_decode = torch.cat([a_decode, l_decode, v_decode], dim=-1)
-        attention_gate = self.attention_gate(multimodal_decode)
-        attention_gate = F.softmax(attention_gate, dim=-1)
-        attended_a = a_decode * attention_gate[:,:,0:1] # a
-        attended_l = l_decode * attention_gate[:,:,1:2] # a
-        attended_v = v_decode * attention_gate[:,:,2:] # a
-        # attended_multimodal = attended_a + attended_l + attended_v
+#         # attention_gated.
+#         multimodal_decode = torch.cat([a_decode, l_decode, v_decode], dim=-1)
+#         attention_gate = self.attention_gate(multimodal_decode)
+#         attention_gate = F.softmax(attention_gate, dim=-1)
+#         attended_a = a_decode * attention_gate[:,:,0:1] # a
+#         attended_l = l_decode * attention_gate[:,:,1:2] # a
+#         attended_v = v_decode * attention_gate[:,:,2:] # a
+#         # attended_multimodal = attended_a + attended_l + attended_v
         attended_multimodal = l_decode
         
         # decoding to ratings.
@@ -491,11 +482,11 @@ def evaluate(
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             input_a_feature, input_l_feature, input_l_mask, input_l_segment_ids,                 input_v_feature, rating_labels, seq_lens, input_mask = batch
-            input_a_feature = input_a_feature.to(device)
+            # input_a_feature = input_a_feature.to(device)
             input_l_feature = input_l_feature.to(device)
             input_l_mask = input_l_mask.to(device)
             input_l_segment_ids = input_l_segment_ids.to(device)
-            input_v_feature = input_v_feature.to(device)
+            # input_v_feature = input_v_feature.to(device)
             rating_labels = rating_labels.to(device)
             seq_lens = seq_lens.to(device)
             input_mask = input_mask.to(device)
@@ -790,9 +781,9 @@ if not args.eval_only:
         len(train_data) / args.train_batch_size * args.num_train_epochs)
     # We use the default BERT optimz to do gradient descent.
     # optimizer = BERTAdam(optimizer_parameters,
-                        # lr=args.lr,
-                        # warmup=args.warmup_proportion,
-                        # t_total=num_train_steps)
+    #                     lr=args.lr,
+    #                     warmup=args.warmup_proportion,
+    #                     t_total=num_train_steps)
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
     # Determine the device.
     if not torch.cuda.is_available() or is_jupyter:
