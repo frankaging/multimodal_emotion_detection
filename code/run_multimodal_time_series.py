@@ -56,7 +56,7 @@ preprocess = {
     'acoustic_timer': lambda df : df.loc[:,' frameTime'],
     'linguistic': lambda df : df.loc[:,'word'],
     'linguistic_timer': lambda df : df.loc[:,'time-offset'],
-    'target': lambda df : df.loc[:,' rating'],
+    'target': lambda df : ((df.loc[:,'evaluatorWeightedEstimate'] / 50.0) - 1.0),
     'target_timer': lambda df : df.loc[:,'time'],
 }
 
@@ -82,7 +82,7 @@ def preprocess_SEND_files(
     modality_dir_map = {"acoustic": "acoustic-egemaps",  
                         "linguistic": "linguistic-word-level", # we don't load features
                         "visual": "image-raw", # image is nested,
-                        "target": "target",
+                        "target": "observer_EWE",
                        },
     linguistic_tokenizer=None,
     pad_symbol=0,
@@ -165,7 +165,7 @@ def preprocess_SEND_files(
         
         # Step 1: Load rating data, and we can get window partitioned according to our interval.
         target_id = video_id.split("_")[0][2:] + "_" + video_id.split("_")[1][3:]
-        target_file = os.path.join(target_data_dir, modality_dir_map["target"], f"target_{target_id}_normal.csv")
+        target_file = os.path.join(target_data_dir, modality_dir_map["target"], f"results_{target_id}.csv")
         target_df = pd.read_csv(target_file)
         target_ratings = np.array(preprocess["target"](target_df))
         target_timestamps = np.array(preprocess["target_timer"](target_df))
@@ -278,7 +278,7 @@ def preprocess_SEND_files(
 
         # ratings (target)
         target_id = video_id.split("_")[0][2:] + "_" + video_id.split("_")[1][3:]
-        target_file = os.path.join(target_data_dir, modality_dir_map["target"], f"target_{target_id}_normal.csv")
+        target_file = os.path.join(target_data_dir, modality_dir_map["target"], f"results_{target_id}.csv")
         target_df = pd.read_csv(target_file)
         target_ratings = np.array(preprocess["target"](target_df))
         target_timestamps = np.array(preprocess["target_timer"](target_df))
@@ -494,6 +494,9 @@ def evaluate(
 
             loss, output =                 model(input_a_feature, input_l_feature, input_l_mask, input_l_segment_ids,
                       input_v_feature, rating_labels, input_mask)
+            n_gpu = torch.cuda.device_count()
+            if n_gpu > 1:
+                loss = loss.mean() # mean() to average on multi-gpu.
             total_loss += loss.data.cpu().detach().tolist()
             data_num += torch.sum(seq_lens).tolist()
             output_array = output.cpu().detach().numpy()
@@ -518,26 +521,24 @@ def train(
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             input_a_feature, input_l_feature, input_l_mask, input_l_segment_ids,                 input_v_feature, rating_labels, seq_lens, input_mask = batch
-            input_a_feature = input_a_feature.to(device)
+            # input_a_feature = input_a_feature.to(device)
             input_l_feature = input_l_feature.to(device)
             input_l_mask = input_l_mask.to(device)
             input_l_segment_ids = input_l_segment_ids.to(device)
-            input_v_feature = input_v_feature.to(device)
+            # input_v_feature = input_v_feature.to(device)
             rating_labels = rating_labels.to(device)
             seq_lens = seq_lens.to(device)
             input_mask = input_mask.to(device)
             
             loss, output =                 model(input_a_feature, input_l_feature, input_l_mask, input_l_segment_ids,
                       input_v_feature, rating_labels, input_mask)
-
-            # loss /= torch.sum(seq_lens).tolist()
-            loss.backward() # uncomment this for actual run!
-            optimizer.step()
-            optimizer.zero_grad()
-
             n_gpu = torch.cuda.device_count()
             if n_gpu > 1:
                 loss = loss.mean() # mean() to average on multi-gpu.
+            loss /= (torch.sum(seq_lens).tolist())
+            loss.backward() # uncomment this for actual run!
+            optimizer.step()
+            optimizer.zero_grad()
 
             pbar.set_description("loss: %.4f"%loss)
             if args.is_tensorboard:
