@@ -51,15 +51,6 @@ from models.BERT import *
 from models.VGGFace2 import *
 from models.optimization import *
 
-preprocess = {
-    'acoustic': lambda df : df.loc[:,' F0semitoneFrom27.5Hz_sma3nz_amean':' equivalentSoundLevel_dBp'],
-    'acoustic_timer': lambda df : df.loc[:,' frameTime'],
-    'linguistic': lambda df : df.loc[:,'word'],
-    'linguistic_timer': lambda df : df.loc[:,'time-offset'],
-    'target': lambda df : ((df.loc[:,'evaluatorWeightedEstimate'] / 50.0) - 1.0),
-    'target_timer': lambda df : df.loc[:,'time'],
-}
-
 class InputFeature:
     
     def __init__(
@@ -78,6 +69,7 @@ class InputFeature:
 def preprocess_SEND_files(
     data_dir, # Multitmodal X
     target_data_dir, # Y
+    args,
     time_window_in_sec=5.0,
     modality_dir_map = {"acoustic": "acoustic-egemaps",  
                         "linguistic": "linguistic-word-level", # we don't load features
@@ -86,7 +78,7 @@ def preprocess_SEND_files(
                        },
     linguistic_tokenizer=None,
     pad_symbol=0,
-    max_number_of_file = -1
+    max_number_of_file=-1
 ):
     SEND_videos = []
     
@@ -165,7 +157,10 @@ def preprocess_SEND_files(
         
         # Step 1: Load rating data, and we can get window partitioned according to our interval.
         target_id = video_id.split("_")[0][2:] + "_" + video_id.split("_")[1][3:]
-        target_file = os.path.join(target_data_dir, modality_dir_map["target"], f"results_{target_id}.csv")
+        if args.use_target_ratings:
+            target_file = os.path.join(target_data_dir, modality_dir_map["target"], f"target_{target_id}_normal.csv")
+        else:
+            target_file = os.path.join(target_data_dir, modality_dir_map["target"], f"results_{target_id}.csv")
         target_df = pd.read_csv(target_file)
         target_ratings = np.array(preprocess["target"](target_df))
         target_timestamps = np.array(preprocess["target_timer"](target_df))
@@ -278,7 +273,10 @@ def preprocess_SEND_files(
 
         # ratings (target)
         target_id = video_id.split("_")[0][2:] + "_" + video_id.split("_")[1][3:]
-        target_file = os.path.join(target_data_dir, modality_dir_map["target"], f"results_{target_id}.csv")
+        if args.use_target_ratings:
+            target_file = os.path.join(target_data_dir, modality_dir_map["target"], f"target_{target_id}_normal.csv")
+        else:
+            target_file = os.path.join(target_data_dir, modality_dir_map["target"], f"results_{target_id}.csv")
         target_df = pd.read_csv(target_file)
         target_ratings = np.array(preprocess["target"](target_df))
         target_timestamps = np.array(preprocess["target_timer"](target_df))
@@ -419,7 +417,7 @@ class MultimodalEmotionPrediction(nn.Module):
         input_v_feature, train_rating_labels, input_mask,
     ):
         # acoustic encoder
-        # a_decode = self.acoustic_encoder(input_a_feature)
+        a_decode = self.acoustic_encoder(input_a_feature)
         
         # linguistic encoder
         batch_size, seq_len = input_l_feature.shape[0], input_l_feature.shape[1]
@@ -436,25 +434,22 @@ class MultimodalEmotionPrediction(nn.Module):
         l_decode = self.linguistic_resize(l_decode)
         
         # visual encoder
-#         input_v_feature = input_v_feature.reshape(batch_size*seq_len, 224, 224, 3)
-#         input_v_feature = input_v_feature.permute(0,3,1,2).contiguous()
-#         _, v_decode = self.visual_encoder(input_v_feature)
-#         v_decode = v_decode.squeeze(dim=-1).squeeze(dim=-1).contiguous()
-#         v_decode = v_decode.reshape(batch_size, seq_len, -1)
-
-#         # resize.
-         
-#         v_decode = self.visual_resize(v_decode)
+        input_v_feature = input_v_feature.reshape(batch_size*seq_len, 224, 224, 3)
+        input_v_feature = input_v_feature.permute(0,3,1,2).contiguous()
+        _, v_decode = self.visual_encoder(input_v_feature)
+        v_decode = v_decode.squeeze(dim=-1).squeeze(dim=-1).contiguous()
+        v_decode = v_decode.reshape(batch_size, seq_len, -1)
+        v_decode = self.visual_resize(v_decode)
         
-#         # attention_gated.
-#         multimodal_decode = torch.cat([a_decode, l_decode, v_decode], dim=-1)
-#         attention_gate = self.attention_gate(multimodal_decode)
-#         attention_gate = F.softmax(attention_gate, dim=-1)
-#         attended_a = a_decode * attention_gate[:,:,0:1] # a
-#         attended_l = l_decode * attention_gate[:,:,1:2] # a
-#         attended_v = v_decode * attention_gate[:,:,2:] # a
-#         # attended_multimodal = attended_a + attended_l + attended_v
-        attended_multimodal = l_decode
+        # attention_gated.
+        multimodal_decode = torch.cat([a_decode, l_decode, v_decode], dim=-1)
+        attention_gate = self.attention_gate(multimodal_decode)
+        attention_gate = F.softmax(attention_gate, dim=-1)
+        attended_a = a_decode * attention_gate[:,:,0:1] # a
+        attended_l = l_decode * attention_gate[:,:,1:2] # a
+        attended_v = v_decode * attention_gate[:,:,2:] # a
+        attended_multimodal = attended_a + attended_l + attended_v
+        # attended_multimodal = l_decode
         
         # decoding to ratings.
         output, (_, _) = self.rating_decoder(attended_multimodal)
@@ -483,11 +478,11 @@ def evaluate(
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             input_a_feature, input_l_feature, input_l_mask, input_l_segment_ids,                 input_v_feature, rating_labels, seq_lens, input_mask = batch
-            # input_a_feature = input_a_feature.to(device)
+            input_a_feature = input_a_feature.to(device)
             input_l_feature = input_l_feature.to(device)
             input_l_mask = input_l_mask.to(device)
             input_l_segment_ids = input_l_segment_ids.to(device)
-            # input_v_feature = input_v_feature.to(device)
+            input_v_feature = input_v_feature.to(device)
             rating_labels = rating_labels.to(device)
             seq_lens = seq_lens.to(device)
             input_mask = input_mask.to(device)
@@ -521,11 +516,11 @@ def train(
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             input_a_feature, input_l_feature, input_l_mask, input_l_segment_ids,                 input_v_feature, rating_labels, seq_lens, input_mask = batch
-            # input_a_feature = input_a_feature.to(device)
+            input_a_feature = input_a_feature.to(device)
             input_l_feature = input_l_feature.to(device)
             input_l_mask = input_l_mask.to(device)
             input_l_segment_ids = input_l_segment_ids.to(device)
-            # input_v_feature = input_v_feature.to(device)
+            input_v_feature = input_v_feature.to(device)
             rating_labels = rating_labels.to(device)
             seq_lens = seq_lens.to(device)
             input_mask = input_mask.to(device)
@@ -626,7 +621,11 @@ def arg_parse():
                         default=False,
                         action='store_true',
                         help="Whether we are debugging the code only.")
-    
+    parser.add_argument("--use_target_ratings",
+                        default=False,
+                        action='store_true',
+                        help="Whether to use target ratings from the dataset.")
+
     parser.set_defaults(
         # Exp management:
         seed=42,
@@ -698,6 +697,35 @@ if __name__ == "__main__":
     
     train_SEND_features = None
     test_SEND_features = None
+    
+    if args.use_target_ratings:
+        logger.info("WARNING: use_target_ratings is setting to TRUE.")
+        modality_dir_map = {"acoustic": "acoustic-egemaps",  
+                            "linguistic": "linguistic-word-level", # we don't load features
+                            "visual": "image-raw", # image is nested,
+                            "target": "target"}
+        preprocess = {
+            'acoustic': lambda df : df.loc[:,' F0semitoneFrom27.5Hz_sma3nz_amean':' equivalentSoundLevel_dBp'],
+            'acoustic_timer': lambda df : df.loc[:,' frameTime'],
+            'linguistic': lambda df : df.loc[:,'word'],
+            'linguistic_timer': lambda df : df.loc[:,'time-offset'],
+            'target': lambda df : ((df.loc[:,' rating'] / 0.5) - 1.0),
+            'target_timer': lambda df : df.loc[:,'time'],
+        }
+    else:
+        logger.info("WARNING: use_target_ratings is setting to FALSE.")
+        modality_dir_map = {"acoustic": "acoustic-egemaps",  
+                            "linguistic": "linguistic-word-level", # we don't load features
+                            "visual": "image-raw", # image is nested,
+                            "target": "observer_EWE"}
+        preprocess = {
+            'acoustic': lambda df : df.loc[:,' F0semitoneFrom27.5Hz_sma3nz_amean':' equivalentSoundLevel_dBp'],
+            'acoustic_timer': lambda df : df.loc[:,' frameTime'],
+            'linguistic': lambda df : df.loc[:,'word'],
+            'linguistic_timer': lambda df : df.loc[:,'time-offset'],
+            'target': lambda df : ((df.loc[:,'evaluatorWeightedEstimate'] / 50.0) - 1.0),
+            'target_timer': lambda df : df.loc[:,'time'],
+        }
     if not args.eval_only:
         # Training data loading 
         train_modalities_data_dir = os.path.join(args.data_dir, "features/Train/")
@@ -709,6 +737,8 @@ if __name__ == "__main__":
         train_SEND_features = preprocess_SEND_files(
             train_modalities_data_dir,
             train_target_data_dir,
+            args,
+            modality_dir_map=modality_dir_map,
             linguistic_tokenizer=tokenizer,
             max_number_of_file=args.max_number_of_file
         )
@@ -719,6 +749,8 @@ if __name__ == "__main__":
             test_SEND_features = preprocess_SEND_files(
                 test_modalities_data_dir,
                 test_target_data_dir,
+                args,
+                modality_dir_map=modality_dir_map,
                 linguistic_tokenizer=tokenizer,
                 max_number_of_file=args.max_number_of_file
             )
@@ -730,6 +762,8 @@ if __name__ == "__main__":
         test_SEND_features = preprocess_SEND_files(
             test_modalities_data_dir,
             test_target_data_dir,
+            args,
+            modality_dir_map=modality_dir_map,
             linguistic_tokenizer=tokenizer,
             max_number_of_file=args.max_number_of_file
         )
