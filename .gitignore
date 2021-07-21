@@ -1,3 +1,6 @@
+data-files/
+observer/
+target/
 2021-07-03-run-1/
 code/wandb/
 saved-models/

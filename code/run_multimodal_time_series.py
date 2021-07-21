@@ -69,13 +69,20 @@ class InputFeature:
 def preprocess_SEND_files(
     data_dir, # Multitmodal X
     target_data_dir, # Y
-    args,
+    use_target_ratings,
     time_window_in_sec=5.0,
     modality_dir_map = {"acoustic": "acoustic-egemaps",  
                         "linguistic": "linguistic-word-level", # we don't load features
                         "visual": "image-raw", # image is nested,
                         "target": "observer_EWE",
                        },
+    preprocess= {'acoustic': lambda df : df.loc[:,' F0semitoneFrom27.5Hz_sma3nz_amean':' equivalentSoundLevel_dBp'],
+                 'acoustic_timer': lambda df : df.loc[:,' frameTime'],
+                 'linguistic': lambda df : df.loc[:,'word'],
+                 'linguistic_timer': lambda df : df.loc[:,'time-offset'],
+                 'target': lambda df : ((df.loc[:,'evaluatorWeightedEstimate'] / 50.0) - 1.0),
+                 'target_timer': lambda df : df.loc[:,'time'],
+                },
     linguistic_tokenizer=None,
     pad_symbol=0,
     max_number_of_file=-1
@@ -157,7 +164,7 @@ def preprocess_SEND_files(
         
         # Step 1: Load rating data, and we can get window partitioned according to our interval.
         target_id = video_id.split("_")[0][2:] + "_" + video_id.split("_")[1][3:]
-        if args.use_target_ratings:
+        if use_target_ratings:
             target_file = os.path.join(target_data_dir, modality_dir_map["target"], f"target_{target_id}_normal.csv")
         else:
             target_file = os.path.join(target_data_dir, modality_dir_map["target"], f"results_{target_id}.csv")
@@ -273,7 +280,7 @@ def preprocess_SEND_files(
 
         # ratings (target)
         target_id = video_id.split("_")[0][2:] + "_" + video_id.split("_")[1][3:]
-        if args.use_target_ratings:
+        if use_target_ratings:
             target_file = os.path.join(target_data_dir, modality_dir_map["target"], f"target_{target_id}_normal.csv")
         else:
             target_file = os.path.join(target_data_dir, modality_dir_map["target"], f"results_{target_id}.csv")
@@ -737,8 +744,9 @@ if __name__ == "__main__":
         train_SEND_features = preprocess_SEND_files(
             train_modalities_data_dir,
             train_target_data_dir,
-            args,
+            args.use_target_ratings,
             modality_dir_map=modality_dir_map,
+            preprocess=preprocess,
             linguistic_tokenizer=tokenizer,
             max_number_of_file=args.max_number_of_file
         )
@@ -749,8 +757,9 @@ if __name__ == "__main__":
             test_SEND_features = preprocess_SEND_files(
                 test_modalities_data_dir,
                 test_target_data_dir,
-                args,
+                args.use_target_ratings,
                 modality_dir_map=modality_dir_map,
+                preprocess=preprocess,
                 linguistic_tokenizer=tokenizer,
                 max_number_of_file=args.max_number_of_file
             )
@@ -764,6 +773,7 @@ if __name__ == "__main__":
             test_target_data_dir,
             args,
             modality_dir_map=modality_dir_map,
+            preprocess=preprocess,
             linguistic_tokenizer=tokenizer,
             max_number_of_file=args.max_number_of_file
         )
@@ -805,45 +815,41 @@ if __name__ == "__main__":
         test_dataloader = DataLoader(test_data, batch_size=args.eval_batch_size, shuffle=False)
     else:
         logger.info("Not implemented...")
-
-
-# In[ ]:
-
-
-if not args.eval_only:
-    # Init model with optimizer.
-    model = MultimodalEmotionPrediction()
-    no_decay = ['bias', 'gamma', 'beta']
-    optimizer_parameters = [
-        {'params': [p for n, p in model.named_parameters() 
-            if not any(nd in n for nd in no_decay)], 'weight_decay_rate': 0.01},
-        {'params': [p for n, p in model.named_parameters() 
-            if any(nd in n for nd in no_decay)], 'weight_decay_rate': 0.0}
-        ]
-    num_train_steps = int(
-        len(train_data) / args.train_batch_size * args.num_train_epochs)
-    # We use the default BERT optimz to do gradient descent.
-    # optimizer = BERTAdam(optimizer_parameters,
-    #                     lr=args.lr,
-    #                     warmup=args.warmup_proportion,
-    #                     t_total=num_train_steps)
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    # Determine the device.
-    if not torch.cuda.is_available() or is_jupyter:
-        device = torch.device("cpu")
-        n_gpu = -1
-    else:
-        device = torch.device("cuda")
-        n_gpu = torch.cuda.device_count()
         
-    if n_gpu > 1:
-        model = torch.nn.DataParallel(model)
-    model = model.to(device)
+    if not args.eval_only:
+        # Init model with optimizer.
+        model = MultimodalEmotionPrediction()
+        no_decay = ['bias', 'gamma', 'beta']
+        optimizer_parameters = [
+            {'params': [p for n, p in model.named_parameters() 
+                if not any(nd in n for nd in no_decay)], 'weight_decay_rate': 0.01},
+            {'params': [p for n, p in model.named_parameters() 
+                if any(nd in n for nd in no_decay)], 'weight_decay_rate': 0.0}
+            ]
+        num_train_steps = int(
+            len(train_data) / args.train_batch_size * args.num_train_epochs)
+        # We use the default BERT optimz to do gradient descent.
+        # optimizer = BERTAdam(optimizer_parameters,
+        #                     lr=args.lr,
+        #                     warmup=args.warmup_proportion,
+        #                     t_total=num_train_steps)
+        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
+        # Determine the device.
+        if not torch.cuda.is_available() or is_jupyter:
+            device = torch.device("cpu")
+            n_gpu = -1
+        else:
+            device = torch.device("cuda")
+            n_gpu = torch.cuda.device_count()
 
-    train(
-        train_dataloader, test_dataloader, model, optimizer,
-        device, args
-    )
-else:
-    logger.info("Not implemented...")
+        if n_gpu > 1:
+            model = torch.nn.DataParallel(model)
+        model = model.to(device)
+
+        train(
+            train_dataloader, test_dataloader, model, optimizer,
+            device, args
+        )
+    else:
+        logger.info("Not implemented...")
 
