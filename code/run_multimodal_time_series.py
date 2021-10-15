@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[ ]:
+# In[90]:
 
 
 import os
@@ -70,7 +70,7 @@ def preprocess_SEND_files(
     data_dir, # Multitmodal X
     target_data_dir, # Y
     use_target_ratings,
-    time_window_in_sec=5.0,
+    time_window_in_sec=4.0,
     modality_dir_map = {"acoustic": "acoustic-egemaps",  
                         "linguistic": "linguistic-word-level", # we don't load features
                         "visual": "image-raw", # image is nested,
@@ -87,6 +87,10 @@ def preprocess_SEND_files(
     pad_symbol=0,
     max_number_of_file=-1
 ):
+    
+    import time
+
+    start = time.time()    
     SEND_videos = []
     
     # basically, let us gett all the video ids?
@@ -121,6 +125,7 @@ def preprocess_SEND_files(
                     continue
                 l_words.append(line.strip().split("\t")[2].lower().strip())
                 l_timestamps.append(float(line.strip().split("\t")[1]))
+
         #l_timestamps = np.array(preprocess["linguistic_timer"](l_df))
         l_timestamps = np.array(l_timestamps)
         # sample based on interval
@@ -143,10 +148,11 @@ def preprocess_SEND_files(
             sampled_l_words.append(tmp_words)
         for window_words in sampled_l_words:
             window_str = " ".join(window_words)
-            window_words = linguistic_tokenizer.tokenize(window_str)
-            token_ids = linguistic_tokenizer.convert_tokens_to_ids(window_words)
+            window_tokens = linguistic_tokenizer.tokenize(window_str)
+            token_ids = linguistic_tokenizer.convert_tokens_to_ids(window_tokens)
             if len(token_ids) > max_window_l_length:
                 max_window_l_length = len(token_ids)
+
     max_window_l_length += 2 # the start and the end token
     
     if max_number_of_file != -1:
@@ -230,7 +236,7 @@ def preprocess_SEND_files(
             if hash_in_window >= len(windows):
                 continue # we cannot predict after ratings max.
             sampled_l_features_raw[hash_in_window].append(l_words[i])
-        # print(sampled_l_features_raw)
+
         sampled_l_features = []
         sampled_l_mask = []
         sampled_l_segment_ids = []
@@ -265,7 +271,7 @@ def preprocess_SEND_files(
             if hash_in_window >= len(windows):
                 continue # we cannot predict after ratings max.
             sampled_v_features_raw[hash_in_window].append(f)
-
+            
         sampled_v_features = []
         for window in sampled_v_features_raw:
             if len(window) == 0:
@@ -276,6 +282,7 @@ def preprocess_SEND_files(
                 f_path = os.path.join(data_dir, modality_dir_map["visual"], video_id, f[1])
                 f_image = Image.open(f_path)
                 f_data = asarray(f_image)
+                f_data = f_data[...,::-1] # reverse the order.
             sampled_v_features.append(f_data)
 
         # ratings (target)
@@ -312,6 +319,28 @@ def preprocess_SEND_files(
         sampled_ratings = sampled_ratings[:max_window_cutoff]
         sampled_l_mask = sampled_l_mask[:max_window_cutoff]
         sampled_l_segment_ids = sampled_l_segment_ids[:max_window_cutoff]
+        input_mask = np.ones(len(sampled_a_features)).tolist()
+        max_seq_len = 60
+        for i in range(max_seq_len-len(sampled_a_features)):
+            sampled_a_features.append(np.zeros(a_feature_dim))
+            sampled_l_features.append(np.zeros(max_window_l_length))
+            sampled_l_mask.append(np.zeros(max_window_l_length))
+            sampled_l_segment_ids.append(np.zeros(max_window_l_length))
+            sampled_v_features.append(np.zeros((224,224,3)))
+            sampled_ratings.append(0.0)
+            input_mask.append(0)
+
+        sampled_a_features = torch.tensor(sampled_a_features)
+        sampled_l_features = torch.LongTensor(sampled_l_features)
+        sampled_l_mask = torch.LongTensor(sampled_l_mask)
+        sampled_l_segment_ids = torch.LongTensor(sampled_l_segment_ids)
+        processed_tensor = torch.tensor(sampled_v_features).float()
+        processed_tensor[..., 0] -= 91.4953
+        processed_tensor[..., 1] -= 103.8827
+        processed_tensor[..., 2] -= 131.0912
+        sampled_v_features = processed_tensor
+        sampled_ratings = torch.tensor(sampled_ratings)
+        input_mask = torch.LongTensor(input_mask)
         
         video_struct = {
             "video_id": video_id,
@@ -321,32 +350,15 @@ def preprocess_SEND_files(
             "l_segment_ids": sampled_l_segment_ids,
             "v_feature": sampled_v_features,
             "rating": sampled_ratings,
-            "seq_len": len(sampled_a_features),
-            "input_mask": np.ones(len(sampled_a_features)).tolist()
+            "seq_len": sampled_a_features.shape[0],
+            "input_mask": input_mask
         }
         video_count += 1
         SEND_videos += [video_struct]
-        if len(sampled_a_features) > max_seq_len:
-            max_seq_len = len(sampled_a_features)
     
-    # padding based on length
-    for video_struct in SEND_videos:
-        for i in range(max_seq_len-video_struct["seq_len"]):
-            video_struct["a_feature"].append(np.zeros(a_feature_dim))
-            video_struct["l_feature"].append(np.zeros(max_window_l_length))
-            video_struct["l_mask"].append(np.zeros(max_window_l_length))
-            video_struct["l_segment_ids"].append(np.zeros(max_window_l_length))
-            video_struct["v_feature"].append(np.zeros((224,224,3)))
-            video_struct["rating"].append(0.0)
-            video_struct["input_mask"].append(0)
-
-        video_struct["a_feature"] = torch.tensor(video_struct["a_feature"])
-        video_struct["l_feature"] = torch.LongTensor(video_struct["l_feature"])
-        video_struct["l_mask"] = torch.LongTensor(video_struct["l_mask"])
-        video_struct["l_segment_ids"] = torch.LongTensor(video_struct["l_segment_ids"])
-        video_struct["v_feature"] = torch.tensor(video_struct["v_feature"])
-        video_struct["rating"] = torch.tensor(video_struct["rating"])
-        video_struct["input_mask"] = torch.LongTensor(video_struct["input_mask"])
+    end = time.time()
+    elapsed = end - start
+    logger.info(f"Time elapsed for first-pass: {elapsed}")
         
     return SEND_videos
 
@@ -391,40 +403,34 @@ class MultimodalEmotionPrediction(nn.Module):
         self.visual_encoder = Resnet50_scratch_dag()
         state_dict = torch.load(visual_model_path)
         self.visual_encoder.load_state_dict(state_dict)
-        
-        # Creating acoustic model.
-        acoustic_dim = 88
-        self.acoustic_encoder = nn.Sequential(nn.Linear(acoustic_dim, 128))
-        
-        # Resize layers.
-        self.linguistic_resize = nn.Sequential(nn.Linear(768, 128))
-        self.visual_resize = nn.Sequential(nn.Linear(2048, 128))
-        
-        # Attention gate.
-        multimodal_dim = 128*3
-        self.attention_gate = nn.Sequential(
-                                nn.Linear(multimodal_dim, 128),
-                                nn.ReLU(),
-                                nn.Dropout(0.3),
-                                nn.Linear(128, 3))
-        
+        self.visual_reducer = nn.Linear(2048, 768)
+
         # Rating lstm.
-        hidden_dim = 128
+        # hidden_dim = 128
+        hidden_dim = 768        
         self.rating_decoder = nn.LSTM(
-                                hidden_dim, hidden_dim, 1, 
-                                batch_first=True, bidirectional=True)
+                                hidden_dim, 64, 1, 
+                                batch_first=True, bidirectional=False)
                                               
         # Rating decoder.
         self.rating_output = nn.Sequential(
-                                nn.Linear(hidden_dim*2, 1))
+            nn.Linear(64, 1)
+        )
+        
+        self.acoustic_encoder = nn.Linear(88, 32)
+        self.rating_decoder_a = nn.LSTM(
+                                32, 1, 1, 
+                                batch_first=True, bidirectional=False)
+            
+        self.rating_decoder_v = nn.LSTM(
+                                768, 1, 1, 
+                                batch_first=True, bidirectional=False)
             
     def forward(
         self, input_a_feature, input_l_feature, 
         input_l_mask, input_l_segment_ids, 
         input_v_feature, train_rating_labels, input_mask,
     ):
-        # acoustic encoder
-        a_decode = self.acoustic_encoder(input_a_feature)
         
         # linguistic encoder
         batch_size, seq_len = input_l_feature.shape[0], input_l_feature.shape[1]
@@ -438,7 +444,6 @@ class MultimodalEmotionPrediction(nn.Module):
             token_type_ids=input_l_segment_ids,
         )
         l_decode = l_decode.reshape(batch_size, seq_len, -1)
-        l_decode = self.linguistic_resize(l_decode)
         
         # visual encoder
         input_v_feature = input_v_feature.reshape(batch_size*seq_len, 224, 224, 3)
@@ -446,23 +451,34 @@ class MultimodalEmotionPrediction(nn.Module):
         _, v_decode = self.visual_encoder(input_v_feature)
         v_decode = v_decode.squeeze(dim=-1).squeeze(dim=-1).contiguous()
         v_decode = v_decode.reshape(batch_size, seq_len, -1)
-        v_decode = self.visual_resize(v_decode)
+        v_decode = self.visual_reducer(v_decode)
         
         # attention_gated.
-        multimodal_decode = torch.cat([a_decode, l_decode, v_decode], dim=-1)
-        attention_gate = self.attention_gate(multimodal_decode)
-        attention_gate = F.softmax(attention_gate, dim=-1)
-        attended_a = a_decode * attention_gate[:,:,0:1] # a
-        attended_l = l_decode * attention_gate[:,:,1:2] # a
-        attended_v = v_decode * attention_gate[:,:,2:] # a
-        attended_multimodal = attended_a + attended_l + attended_v
+        # attention_gate = self.attention_gate(multimodal_decode)
+        # attention_gate = F.softmax(attention_gate, dim=-1)
+        # attended_a = a_decode * attention_gate[:,:,0:1] # a
+        # attended_l = l_decode * attention_gate[:,:,1:2] # a
+        # attended_v = v_decode * attention_gate[:,:,2:] # a
+        # attended_multimodal = attended_a + attended_l + attended_v
         # attended_multimodal = l_decode
         
         # decoding to ratings.
-        output, (_, _) = self.rating_decoder(attended_multimodal)
+        output, (_, _) = self.rating_decoder(l_decode)
         output = self.rating_output(output)
         output = output.squeeze(dim=-1)
         output = output * input_mask
+        
+        a_decode = self.acoustic_encoder(input_a_feature)
+        output_a, (_, _) = self.rating_decoder_a(a_decode)
+        output_a = output_a.squeeze(dim=-1)
+        output_a = output_a * input_mask
+        
+        output_v, (_, _) = self.rating_decoder_v(v_decode)
+        output_v = output_v.squeeze(dim=-1)
+        output_v = output_v * input_mask
+        
+        output += output_a
+        output += output_v
         
         # get loss.
         criterion = nn.MSELoss(reduction='sum')
@@ -696,122 +712,123 @@ if __name__ == "__main__":
         wandb = None
     
     # We don't allow flexibility here..
-    tokenizer = AutoTokenizer.from_pretrained(
-        "bert-base-uncased",
-        use_fast=False,
-        cache_dir="../.huggingface_cache/"
-    )
+#     tokenizer = AutoTokenizer.from_pretrained(
+#         "bert-base-uncased",
+#         use_fast=False,
+#         cache_dir="../.huggingface_cache/"
+#     )
     
-    train_SEND_features = None
-    test_SEND_features = None
+#     train_SEND_features = None
+#     test_SEND_features = None
     
-    if args.use_target_ratings:
-        logger.info("WARNING: use_target_ratings is setting to TRUE.")
-        modality_dir_map = {"acoustic": "acoustic-egemaps",  
-                            "linguistic": "linguistic-word-level", # we don't load features
-                            "visual": "image-raw", # image is nested,
-                            "target": "target"}
-        preprocess = {
-            'acoustic': lambda df : df.loc[:,' F0semitoneFrom27.5Hz_sma3nz_amean':' equivalentSoundLevel_dBp'],
-            'acoustic_timer': lambda df : df.loc[:,' frameTime'],
-            'linguistic': lambda df : df.loc[:,'word'],
-            'linguistic_timer': lambda df : df.loc[:,'time-offset'],
-            'target': lambda df : ((df.loc[:,' rating'] / 0.5) - 1.0),
-            'target_timer': lambda df : df.loc[:,'time'],
-        }
-    else:
-        logger.info("WARNING: use_target_ratings is setting to FALSE.")
-        modality_dir_map = {"acoustic": "acoustic-egemaps",  
-                            "linguistic": "linguistic-word-level", # we don't load features
-                            "visual": "image-raw", # image is nested,
-                            "target": "observer_EWE"}
-        preprocess = {
-            'acoustic': lambda df : df.loc[:,' F0semitoneFrom27.5Hz_sma3nz_amean':' equivalentSoundLevel_dBp'],
-            'acoustic_timer': lambda df : df.loc[:,' frameTime'],
-            'linguistic': lambda df : df.loc[:,'word'],
-            'linguistic_timer': lambda df : df.loc[:,'time-offset'],
-            'target': lambda df : ((df.loc[:,'evaluatorWeightedEstimate'] / 50.0) - 1.0),
-            'target_timer': lambda df : df.loc[:,'time'],
-        }
-    if not args.eval_only:
-        # Training data loading 
-        train_modalities_data_dir = os.path.join(args.data_dir, "features/Train/")
-        train_target_data_dir = os.path.join(args.data_dir, "ratings/Train")
+#     if args.use_target_ratings:
+#         logger.info("WARNING: use_target_ratings is setting to TRUE.")
+#         modality_dir_map = {"acoustic": "acoustic-egemaps",  
+#                             "linguistic": "linguistic-word-level", # we don't load features
+#                             "visual": "image-raw", # image is nested,
+#                             "target": "target"}
+#         preprocess = {
+#             'acoustic': lambda df : df.loc[:,' F0semitoneFrom27.5Hz_sma3nz_amean':' equivalentSoundLevel_dBp'],
+#             'acoustic_timer': lambda df : df.loc[:,' frameTime'],
+#             'linguistic': lambda df : df.loc[:,'word'],
+#             'linguistic_timer': lambda df : df.loc[:,'time-offset'],
+#             'target': lambda df : ((df.loc[:,' rating'] / 0.5) - 1.0),
+#             'target_timer': lambda df : df.loc[:,'time'],
+#         }
+#     else:
+#         logger.info("WARNING: use_target_ratings is setting to FALSE.")
+#         modality_dir_map = {"acoustic": "acoustic-egemaps",  
+#                             "linguistic": "linguistic-word-level", # we don't load features
+#                             "visual": "image-raw", # image is nested,
+#                             "target": "observer_EWE"}
+#         preprocess = {
+#             'acoustic': lambda df : df.loc[:,' F0semitoneFrom27.5Hz_sma3nz_amean':' equivalentSoundLevel_dBp'],
+#             'acoustic_timer': lambda df : df.loc[:,' frameTime'],
+#             'linguistic': lambda df : df.loc[:,'word'],
+#             'linguistic_timer': lambda df : df.loc[:,'time-offset'],
+#             'target': lambda df : ((df.loc[:,'evaluatorWeightedEstimate'] / 50.0) - 1.0),
+#             'target_timer': lambda df : df.loc[:,'time'],
+#         }
+#     if not args.eval_only:
+#         # Training data loading 
+#         train_modalities_data_dir = os.path.join(args.data_dir, "features/Train/")
+#         train_target_data_dir = os.path.join(args.data_dir, "ratings/Train")
 
-        test_modalities_data_dir = os.path.join(args.data_dir, "features/Valid/")
-        test_target_data_dir = os.path.join(args.data_dir, "ratings/Valid")
+#         test_modalities_data_dir = os.path.join(args.data_dir, "features/Valid/")
+#         test_target_data_dir = os.path.join(args.data_dir, "ratings/Valid")
         
-        train_SEND_features = preprocess_SEND_files(
-            train_modalities_data_dir,
-            train_target_data_dir,
-            args.use_target_ratings,
-            modality_dir_map=modality_dir_map,
-            preprocess=preprocess,
-            linguistic_tokenizer=tokenizer,
-            max_number_of_file=args.max_number_of_file
-        )
-        if args.debug_only:
-            logger.info("WARNING: Debugging only. Evaluate and Train datasets are the same.")
-            test_SEND_features = copy.deepcopy(train_SEND_features)
-        else:
-            test_SEND_features = preprocess_SEND_files(
-                test_modalities_data_dir,
-                test_target_data_dir,
-                args.use_target_ratings,
-                modality_dir_map=modality_dir_map,
-                preprocess=preprocess,
-                linguistic_tokenizer=tokenizer,
-                max_number_of_file=args.max_number_of_file
-            )
+#         train_SEND_features = preprocess_SEND_files(
+#             train_modalities_data_dir,
+#             train_target_data_dir,
+#             args.use_target_ratings,
+#             modality_dir_map=modality_dir_map,
+#             preprocess=preprocess,
+#             linguistic_tokenizer=tokenizer,
+#             max_number_of_file=args.max_number_of_file
+#         )
+#         if args.debug_only:
+#             logger.info("WARNING: Debugging only. Evaluate and Train datasets are the same.")
+#             test_SEND_features = copy.deepcopy(train_SEND_features)
+#         else:
+#             test_SEND_features = preprocess_SEND_files(
+#                 test_modalities_data_dir,
+#                 test_target_data_dir,
+#                 args.use_target_ratings,
+#                 modality_dir_map=modality_dir_map,
+#                 preprocess=preprocess,
+#                 linguistic_tokenizer=tokenizer,
+#             )
         
-    else:
-        test_modalities_data_dir = os.path.join(args.data_dir, "features/Test/")
-        test_target_data_dir = os.path.join(args.data_dir, "ratings/Test")
+#     else:
+#         test_modalities_data_dir = os.path.join(args.data_dir, "features/Test/")
+#         test_target_data_dir = os.path.join(args.data_dir, "ratings/Test")
     
-        test_SEND_features = preprocess_SEND_files(
-            test_modalities_data_dir,
-            test_target_data_dir,
-            args,
-            modality_dir_map=modality_dir_map,
-            preprocess=preprocess,
-            linguistic_tokenizer=tokenizer,
-            max_number_of_file=args.max_number_of_file
-        )
+#         test_SEND_features = preprocess_SEND_files(
+#             test_modalities_data_dir,
+#             test_target_data_dir,
+#             args,
+#             modality_dir_map=modality_dir_map,
+#             preprocess=preprocess,
+#             linguistic_tokenizer=tokenizer,
+#             max_number_of_file=args.max_number_of_file
+#         )
+    train_data = torch.load('./train_data.pt')
+    test_data = torch.load('./test_data.pt')
     logger.info("Finish Loading Datasets...")
     
     if not args.eval_only:
         # Initialize all the datasets
-        train_input_a_feature = torch.stack([video_struct["a_feature"] for video_struct in train_SEND_features]).float()
-        train_input_l_feature = torch.stack([video_struct["l_feature"] for video_struct in train_SEND_features])
-        train_input_l_mask = torch.stack([video_struct["l_mask"] for video_struct in train_SEND_features])
-        train_input_l_segment_ids = torch.stack([video_struct["l_segment_ids"] for video_struct in train_SEND_features])
-        train_input_v_feature = torch.stack([video_struct["v_feature"] for video_struct in train_SEND_features]).float()
-        train_rating_labels = torch.stack([video_struct["rating"] for video_struct in train_SEND_features]).float()
-        train_seq_lens = torch.tensor([[video_struct["seq_len"]] for video_struct in train_SEND_features]).float()
-        train_input_mask = torch.stack([video_struct["input_mask"] for video_struct in train_SEND_features])
+#         train_input_a_feature = torch.stack([video_struct["a_feature"] for video_struct in train_SEND_features]).float()
+#         train_input_l_feature = torch.stack([video_struct["l_feature"] for video_struct in train_SEND_features])
+#         train_input_l_mask = torch.stack([video_struct["l_mask"] for video_struct in train_SEND_features])
+#         train_input_l_segment_ids = torch.stack([video_struct["l_segment_ids"] for video_struct in train_SEND_features])
+#         train_input_v_feature = torch.stack([video_struct["v_feature"] for video_struct in train_SEND_features]).float()
+#         train_rating_labels = torch.stack([video_struct["rating"] for video_struct in train_SEND_features]).float()
+#         train_seq_lens = torch.tensor([[video_struct["seq_len"]] for video_struct in train_SEND_features]).float()
+#         train_input_mask = torch.stack([video_struct["input_mask"] for video_struct in train_SEND_features])
 
-        test_input_a_feature = torch.stack([video_struct["a_feature"] for video_struct in test_SEND_features]).float()
-        test_input_l_feature = torch.stack([video_struct["l_feature"] for video_struct in test_SEND_features])
-        test_input_l_mask = torch.stack([video_struct["l_mask"] for video_struct in test_SEND_features])
-        test_input_l_segment_ids = torch.stack([video_struct["l_segment_ids"] for video_struct in test_SEND_features])
-        test_input_v_feature = torch.stack([video_struct["v_feature"] for video_struct in test_SEND_features]).float()
-        test_rating_labels = torch.stack([video_struct["rating"] for video_struct in test_SEND_features]).float()
-        test_seq_lens = torch.tensor([[video_struct["seq_len"]] for video_struct in test_SEND_features]).float()
-        test_input_mask = torch.stack([video_struct["input_mask"] for video_struct in test_SEND_features])
+#         test_input_a_feature = torch.stack([video_struct["a_feature"] for video_struct in test_SEND_features]).float()
+#         test_input_l_feature = torch.stack([video_struct["l_feature"] for video_struct in test_SEND_features])
+#         test_input_l_mask = torch.stack([video_struct["l_mask"] for video_struct in test_SEND_features])
+#         test_input_l_segment_ids = torch.stack([video_struct["l_segment_ids"] for video_struct in test_SEND_features])
+#         test_input_v_feature = torch.stack([video_struct["v_feature"] for video_struct in test_SEND_features]).float()
+#         test_rating_labels = torch.stack([video_struct["rating"] for video_struct in test_SEND_features]).float()
+#         test_seq_lens = torch.tensor([[video_struct["seq_len"]] for video_struct in test_SEND_features]).float()
+#         test_input_mask = torch.stack([video_struct["input_mask"] for video_struct in test_SEND_features])
 
-        train_data = TensorDataset(
-            train_input_a_feature, 
-            train_input_l_feature, train_input_l_mask, train_input_l_segment_ids,
-            train_input_v_feature, train_rating_labels, train_seq_lens, train_input_mask
-        )
+#         train_data = TensorDataset(
+#             train_input_a_feature, 
+#             train_input_l_feature, train_input_l_mask, train_input_l_segment_ids,
+#             train_input_v_feature, train_rating_labels, train_seq_lens, train_input_mask
+#         )
         train_sampler = RandomSampler(train_data)
         train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
 
-        test_data = TensorDataset(
-            test_input_a_feature, 
-            test_input_l_feature, test_input_l_mask, test_input_l_segment_ids,
-            test_input_v_feature, test_rating_labels, test_seq_lens, test_input_mask
-        )
+#         test_data = TensorDataset(
+#             test_input_a_feature, 
+#             test_input_l_feature, test_input_l_mask, test_input_l_segment_ids,
+#             test_input_v_feature, test_rating_labels, test_seq_lens, test_input_mask
+#         )
         test_dataloader = DataLoader(test_data, batch_size=args.eval_batch_size, shuffle=False)
     else:
         logger.info("Not implemented...")

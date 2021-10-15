@@ -1,3 +1,5 @@
+fMRI-rerun/
+*.pt
 data-files/
 observer/
 target/
