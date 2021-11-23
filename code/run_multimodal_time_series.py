@@ -321,6 +321,7 @@ def preprocess_SEND_files(
         sampled_l_segment_ids = sampled_l_segment_ids[:max_window_cutoff]
         input_mask = np.ones(len(sampled_a_features)).tolist()
         max_seq_len = 60
+        seq_len = len(sampled_a_features)
         for i in range(max_seq_len-len(sampled_a_features)):
             sampled_a_features.append(np.zeros(a_feature_dim))
             sampled_l_features.append(np.zeros(max_window_l_length))
@@ -350,7 +351,7 @@ def preprocess_SEND_files(
             "l_segment_ids": sampled_l_segment_ids,
             "v_feature": sampled_v_features,
             "rating": sampled_ratings,
-            "seq_len": sampled_a_features.shape[0],
+            "seq_len": seq_len,
             "input_mask": input_mask
         }
         video_count += 1
@@ -452,15 +453,6 @@ class MultimodalEmotionPrediction(nn.Module):
         v_decode = v_decode.squeeze(dim=-1).squeeze(dim=-1).contiguous()
         v_decode = v_decode.reshape(batch_size, seq_len, -1)
         v_decode = self.visual_reducer(v_decode)
-        
-        # attention_gated.
-        # attention_gate = self.attention_gate(multimodal_decode)
-        # attention_gate = F.softmax(attention_gate, dim=-1)
-        # attended_a = a_decode * attention_gate[:,:,0:1] # a
-        # attended_l = l_decode * attention_gate[:,:,1:2] # a
-        # attended_v = v_decode * attention_gate[:,:,2:] # a
-        # attended_multimodal = attended_a + attended_l + attended_v
-        # attended_multimodal = l_decode
         
         # decoding to ratings.
         output, (_, _) = self.rating_decoder(l_decode)
